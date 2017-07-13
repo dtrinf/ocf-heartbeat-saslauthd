@@ -1,0 +1,413 @@
+#!/bin/bash
+#
+# 
+# David Trigo Chavez - 13-07-2017
+# Updated 
+#
+# Stand-alone LDAP Daemon (saslauthd)
+#
+# Description:  Manages Stand-alone LDAP Daemon (saslauthd) as an OCF resource in
+#               an high-availability setup.
+#
+# Authors:      Jeroen Koekkoek
+#               nozawat@gmail.com
+#               John Keith Hohm
+#
+# License:      GNU General Public License (GPL)
+# Copyright:    (C) 2011 Pagelink B.V.
+#
+#       The OCF code was inspired by the Postfix resource script written by
+#       Raoul Bhatia <r.bhatia@ipax.at>.
+#
+#       The code for managing the saslauthd instance is based on the the saslauthd init
+#       script found in Debian GNU/Linux 6.0.
+#
+# OCF parameters:
+#
+# OCF_RESKEY_prog
+# OCF_RESKEY_saslauthd
+# OCF_RESKEY_path
+# OCF_RESKEY_config
+# OCF_RESKEY_pidfile
+# OCF_RESKEY_lockfile
+# OCF_RESKEY_SOCKETDIR
+# OCF_RESKEY_DAEMONOPTS
+# OCF_RESKEY_MECH
+# OCF_RESKEY_FLAGS
+# OCF_RESKEY_user
+# OCF_RESKEY_group
+################################################################################
+
+# Initialization:
+
+#: ${OCF_ROOT="/usr/lib/ocf"}
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat} 
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+: ${OCF_RESKEY_prog="saslauthd"}
+: ${OCF_RESKEY_saslauthd="/usr/sbin/saslauthd"}
+: ${OCF_RESKEY_path="/usr/sbin/saslauthd"}
+: ${OCF_RESKEY_config="/etc/sysconfig/saslauthd"}
+: ${OCF_RESKEY_pidfile="/var/run/saslauthd/saslauthd.pid"}
+: ${OCF_RESKEY_lockfile="/var/lock/subsys/saslauthd"}
+: ${OCF_RESKEY_SOCKETDIR="/var/run/saslauthd"}
+: ${OCF_RESKEY_DAEMONOPTS=}
+: ${OCF_RESKEY_MECH="shadow"}
+: ${OCF_RESKEY_FLAGS=""}
+: ${OCF_RESKEY_user="root"}
+: ${OCF_RESKEY_group="root"}
+
+# Source function library.
+
+. /etc/init.d/functions
+
+USAGE="Usage: $0 {start|stop|status|monitor|validate-all|meta-data}"
+ORIG_IFS=$IFS
+NEWLINE='
+'
+
+################################################################################
+
+usage() {
+    echo $USAGE >&2
+}
+
+meta_data()
+{
+  cat <<END
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="saslauthd">
+<version>0.1</version>
+
+<longdesc lang="en">
+Resource script for Stand-alone LDAP Daemon (saslauthd). It manages a saslauthd instance as an OCF resource.
+</longdesc>
+<shortdesc lang="en">Manages a Stand-alone LDAP Daemon (saslauthd) instance</shortdesc>
+
+<parameters>
+
+<parameter name="saslauthd" unique="0" required="0">
+<longdesc lang="en">
+Full path to the saslauthd binary.
+For example, "/usr/sbin/saslauthd".
+</longdesc>
+<shortdesc lang="en">Full path to saslauthd binary</shortdesc>
+<content type="string" default="/usr/sbin/saslauthd" />
+</parameter>
+
+<parameter name="ldapsearch" unique="0" required="0">
+<longdesc lang="en">
+Full path to the ldapsearch binary.
+For example, "/usr/bin/ldapsearch".
+</longdesc>
+<shortdesc lang="en">Full path to ldapsearch binary</shortdesc>
+<content type="string" default="ldapsearch" />
+</parameter>
+
+<parameter name="config" required="0" unique="1">
+<longdesc lang="en">
+Full path to a saslauthd configuration directory or a saslauthd configuration file.
+For example, "/etc/ldap/saslauthd.d" or "/etc/ldap/saslauthd.conf".
+</longdesc>
+<shortdesc>Full path to configuration directory or file</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="pidfile" required="0" unique="0">
+<longdesc lang="en">
+File to read the PID from; read from olcPidFile/pidfile in config if not set.
+</longdesc>
+<shortdesc lang="en">File to read PID from</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="user" unique="0" required="0">
+<longdesc lang="en">
+User name or id saslauthd will run with. The group id is also changed to this
+user's gid, unless the group parameter is used to override.
+</longdesc>
+<shortdesc lang="en">User name or id saslauthd will run with</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="group" unique="0" required="0">
+<longdesc lang="en">
+Group name or id saslauthd will run with.
+</longdesc>
+<shortdesc lang="en">Group name or id saslauthd will run with</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="services" required="0" unique="1">
+<longdesc lang="en">
+LDAP (and other scheme) URLs saslauthd will serve.
+For example, "ldap://127.0.0.1:389 ldaps:/// ldapi:///"
+</longdesc>
+<shortdesc>LDAP (and other scheme) URLs to serve</shortdesc>
+<content type="string" default="ldap:///"/>
+</parameter>
+
+<parameter name="watch_suffix" required="0" unique="0">
+<longdesc lang="en">
+Suffix (database backend) that will be monitored for availability. Multiple
+suffixes can be specified by providing a space seperated list. By providing one
+or more suffixes here, the ignore_suffix parameter is discarded. All suffixes
+will be monitored if left blank.
+</longdesc>
+<shortdesc>Suffix that will be monitored for availability.</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="ignore_suffix" required="0" unique="0">
+<longdesc lang="en">
+Suffix (database backend) that will not be monitored for availability. Multiple
+suffixes can be specified by providing a space seperated list. No suffix will
+be excluded if left blank.
+</longdesc>
+<shortdesc>Suffix that will not be monitored for availability.</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="bind_dn" required="0" unique="0">
+<longdesc lang="en">
+Distinguished Name used to bind to the LDAP directory for testing. Leave blank
+to bind to the LDAP directory anonymously.
+</longdesc>
+<shortdesc>Distinguished Name used to bind to the LDAP directory for testing.</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="password" required="0" unique="0">
+<longdesc lang="en">
+Password used to bind to the LDAP directory for testing.
+</longdesc>
+<shortdesc>Password used to bind to the LDAP directory for testing.</shortdesc>
+<content type="string" default=""/>
+</parameter>
+
+<parameter name="parameters" unique="0" required="0">
+<longdesc lang="en">
+saslauthd may be called with additional parameters.
+Specify any of them here.
+</longdesc>
+<shortdesc lang="en">Any additional parameters to saslauthd.</shortdesc>
+<content type="string" default="" />
+</parameter>
+
+<parameter name="stop_escalate" unique="0" required="0">
+<longdesc lang="en">
+Number of seconds to wait for shutdown (using SIGTERM) before resorting to
+SIGKILL
+</longdesc>
+<shortdesc lang="en">Seconds before stop escalation to KILL</shortdesc>
+<content type="integer" default="15" />
+</parameter>
+
+<parameter name="maxfiles">
+<longdesc lang="en">
+Maximum number of open files (for ulimit -n)
+</longdesc>
+<shortdesc lang="en">Max open files</shortdesc>
+<content type="string" default="" />
+</parameter>
+</parameters>
+
+<actions>
+<action name="start"   timeout="20s" />
+<action name="stop"    timeout="20s" />
+<action name="monitor" depth="0"  timeout="20s" interval="60s" />
+<action name="validate-all"  timeout="20s" />
+<action name="meta-data"  timeout="5s" />
+</actions>
+</resource-agent>
+END
+}
+
+terminate()
+{
+  local pid=$1
+  local signal=$2
+  local recheck=${3-0}
+  local rc
+  local waited=0
+
+  kill -$signal $pid >/dev/null 2>&1; rc=$?
+
+  while [ \( $rc -eq 0 \) -a \( $recheck -eq 0 -o $waited -lt $recheck \) ]; do
+    kill -0 $pid >/dev/null 2>&1; rc=$?
+    let "waited += 1"
+
+    if [ $rc -eq 0 ]; then
+      sleep 1
+    fi
+  done
+
+  if [ $rc -ne 0 ]; then
+    return 0
+  fi
+
+  return 1
+}
+
+watch_suffix()
+{
+  local rc
+
+  if [ -n "$OCF_RESKEY_watch_suffix" ]; then
+    if echo "'$OCF_RESKEY_watch_suffix'" | grep "'$1'" >/dev/null 2>&1; then
+      rc=0
+    else
+      rc=1
+    fi
+  else
+    if echo "'$OCF_RESKEY_ignore_suffix'" | grep "'$1'" >/dev/null 2>&1; then
+      rc=1
+    else
+      rc=0
+    fi
+  fi
+
+  return $rc
+}
+
+saslauthd_pid()
+{
+  local pid
+
+  if [ -f "$pid_file" ]; then
+    pid=`head -n 1 "$pid_file" 2>/dev/null`
+
+    if [ "X$pid" != "X" ]; then
+      echo "$pid"
+      return $OCF_SUCCESS
+    fi
+
+    ocf_exit_reason "saslauthd pid file '$pid_file' empty."
+    return $OCF_ERR_GENERIC
+  fi
+
+  ocf_log info "saslauthd pid file '$pid_file' does not exist."
+  return $OCF_NOT_RUNNING
+}
+
+#saslauthd_status()
+#{
+#  local pid=$1
+#  local state=$?
+#
+#  if [ $state -eq $OCF_SUCCESS ]; then
+#
+#    if ! kill -0 $pid >/dev/null 2>&1; then
+#      return $OCF_NOT_RUNNING
+#    else
+#      return $OCF_SUCCESS
+#    fi
+#  fi
+#
+#  return $state
+#}
+
+saslauthd_start()
+{
+        [ -x $OCF_RESKEY_path ] || exit 5
+        echo -n $"Starting $OCF_RESKEY_prog: "
+        daemon $OCF_RESKEY_DAEMONOPTS $OCF_RESKEY_path -m $OCF_RESKEY_SOCKETDIR -a $OCF_RESKEY_MECH $OCF_RESKEY_FLAGS
+        RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && touch $OCF_RESKEY_lockfile
+        return $RETVAL
+}
+
+saslauthd_stop()
+{
+        echo -n $"Stopping $OCF_RESKEY_prog: "
+        killproc $OCF_RESKEY_prog
+        RETVAL=$?
+        echo
+        [ $RETVAL -eq 0 ] && rm -f $OCF_RESKEY_lockfile
+        return $RETVAL
+}
+
+#saslauthd_monitor()
+#{
+#	status -p $OCF_RESKEY_pidfile $OCF_RESKEY_prog
+#}
+
+saslauthd_monitor()
+{
+     
+        if [ -f ${OCF_RESKEY_pidfile} ]; then
+            return $OCF_SUCCESS
+        fi
+        if false ; then
+                return $OCF_ERR_GENERIC
+        fi
+        return $OCF_NOT_RUNNING
+}
+
+#
+# Main
+#
+
+if [ -f /etc/sysconfig/saslauthd ] ; then
+        . /etc/sysconfig/saslauthd
+	# David Trigo Chavez - 13-07-2017
+	OCF_RESKEY_SOCKETDIR=$SOCKETDIR
+	OCF_RESKEY_MECH=$MECH
+	OCF_RESKEY_FLAGS=$FLAGS
+fi
+
+RETVAL=0
+
+if [ $# -ne 1 ]; then
+  usage
+  exit $OCF_ERR_ARGS
+fi
+
+case $1 in
+  meta-data)
+    meta_data
+    exit $OCF_SUCCESS
+    ;;
+  usage|help)
+    usage
+    exit $OCF_SUCCESS
+    ;;
+esac
+
+
+case $1 in
+  status)
+    saslauthd_monitor 
+    exit $?
+    ;;
+  start)
+    rh_status >/dev/null 2>&1
+    saslauthd_start
+    exit $?
+    ;;
+  stop)
+    saslauthd_stop
+    exit $?
+    ;;
+  monitor)
+    saslauthd_monitor
+    exit $?
+    ;;
+  migrate_to)     
+    ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} to ${OCF_RESKEY_CRM_meta_migrate_target}."
+    saslauthd_stop
+    ;;
+  migrate_from)   
+    ocf_log info "Migrating ${OCF_RESOURCE_INSTANCE} from ${OCF_RESKEY_CRM_meta_migrate_source}."
+    saslauthd_start
+    ;;
+  validate-all)
+    exit $OCF_SUCCESS
+    ;;
+  *)
+    usage
+    exit $OCF_ERR_UNIMPLEMENTED
+    ;;
+esac
